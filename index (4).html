@@ -1,0 +1,1172 @@
+<!doctype html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AetherChat — Secure Cognitive Portal</title>
+
+  <!--
+  ╔══════════════════════════════════════════════════════════════════╗
+  ║           CLOUDFLARE WORKER BACKEND CONTRACT SPEC               ║
+  ╠══════════════════════════════════════════════════════════════════╣
+  ║  Route:  POST /api/chat                                         ║
+  ║                                                                 ║
+  ║  Request JSON Body:                                             ║
+  ║  {                                                              ║
+  ║    "messages":    [ { "role": "user"|"assistant",               ║
+  ║                       "content": "string",                      ║
+  ║                       "attachedFiles": [ {                      ║
+  ║                         "name": "string",                       ║
+  ║                         "type": "string",                       ║
+  ║                         "data": "base64string"  } ] } ],        ║
+  ║    "model":       "gpt-4.1-mini" | "gpt-4.1" |                  ║
+  ║                   "gpt-5-mini"   | "gpt-5",                     ║
+  ║    "personality": "assistant" | "coder" | "teacher" |           ║
+  ║                   "creative"  | "cyber",                        ║
+  ║    "systemInstruction": "string"                                ║
+  ║  }                                                              ║
+  ║                                                                 ║
+  ║  Streaming SSE Response (text/event-stream):                    ║
+  ║    data: {"text": "chunk string"}\n\n                           ║
+  ║    data: [DONE]\n\n                                             ║
+  ║                                                                 ║
+  ║  OR  JSON Fallback:  { "reply": "string" }                      ║
+  ║                                                                 ║
+  ║  Cloudflare Worker Secrets required:                            ║
+  ║    OPENAI_API_KEY  — stored via wrangler secret put             ║
+  ╚══════════════════════════════════════════════════════════════════╝
+  -->
+
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['"DM Sans"', 'ui-sans-serif', 'system-ui'],
+            display: ['"Space Grotesk"', 'sans-serif'],
+            mono: ['"JetBrains Mono"', 'ui-monospace', 'monospace'],
+          },
+          colors: {
+            aether: {
+              50:  '#eef0ff',
+              100: '#dce0ff',
+              200: '#bac4ff',
+              300: '#8e9cff',
+              400: '#6b6eff',
+              500: '#5548f7',
+              600: '#4430ec',
+              700: '#3823d0',
+              800: '#2f1fa8',
+              900: '#1a1060',
+            }
+          },
+          animation: {
+            'pulse-slow': 'pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+            'spin-slow':  'spin 6s linear infinite',
+            'slide-in':   'slideIn 0.35s cubic-bezier(0.16, 1, 0.3, 1) both',
+            'fade-in':    'fadeIn 0.2s ease both',
+            'shimmer':    'shimmer 1.8s infinite',
+            'blink':      'blink 1.2s step-end infinite',
+          },
+          keyframes: {
+            slideIn:  { from: { opacity: 0, transform: 'translateY(14px) scale(0.97)' }, to: { opacity: 1, transform: 'translateY(0) scale(1)' } },
+            fadeIn:   { from: { opacity: 0 }, to: { opacity: 1 } },
+            shimmer:  { '0%': { backgroundPosition: '-200% 0' }, '100%': { backgroundPosition: '200% 0' } },
+            blink:    { '0%,100%': { opacity: 1 }, '50%': { opacity: 0 } },
+          },
+          backdropBlur: { xs: '2px' },
+        }
+      }
+    }
+  </script>
+
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@300;400;500;600&display=swap" rel="stylesheet" />
+
+  <!-- React + Babel CDN -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- marked for Markdown rendering -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+
+    body {
+      font-family: 'DM Sans', sans-serif;
+      background: #050508;
+      color: #cbd5e1;
+      overflow-x: hidden;
+      min-height: 100vh;
+    }
+
+    /* ── Scrollbar ── */
+    ::-webkit-scrollbar        { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track  { background: rgba(0,0,0,.25); }
+    ::-webkit-scrollbar-thumb  { background: rgba(255,255,255,.08); border-radius: 999px; }
+    ::-webkit-scrollbar-thumb:hover { background: rgba(85,72,247,.5); }
+
+    /* ── Glass ── */
+    .glass      { background: rgba(255,255,255,.03); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); border: 1px solid rgba(255,255,255,.08); }
+    .glass-dark { background: rgba(0,0,0,.45);        backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); border: 1px solid rgba(255,255,255,.07); }
+
+    /* ── Input glow ── */
+    .input-glow { transition: all .3s ease; }
+    .input-glow:focus { outline: none; border-color: rgba(85,72,247,.65); box-shadow: 0 0 0 2px rgba(85,72,247,.18); }
+
+    /* ── Sidebar transition ── */
+    .sidebar-transition { transition: transform .28s cubic-bezier(.4,0,.2,1); }
+
+    /* ── Markdown prose inside chat ── */
+    .prose-chat p           { margin: 0 0 .65rem; line-height: 1.7; color: #e2e8f0; }
+    .prose-chat p:last-child{ margin-bottom: 0; }
+    .prose-chat code        { font-family: 'JetBrains Mono', monospace; font-size: .82em; background: rgba(255,255,255,.07); padding: .15em .35em; border-radius: 4px; border: 1px solid rgba(255,255,255,.08); color: #a5b4fc; }
+    .prose-chat pre         { margin: .9rem 0; border-radius: 10px; overflow: hidden; border: 1px solid rgba(255,255,255,.08); }
+    .prose-chat pre code    { background: none; border: none; padding: 0; font-size: .88em; color: #c4b5fd; }
+    .prose-chat ul, .prose-chat ol { margin: 0 0 .65rem 1.4rem; color: #cbd5e1; }
+    .prose-chat ul          { list-style: disc; }
+    .prose-chat ol          { list-style: decimal; }
+    .prose-chat li          { margin-bottom: .3rem; line-height: 1.6; }
+    .prose-chat blockquote  { border-left: 3px solid rgba(85,72,247,.6); padding-left: .9rem; color: #94a3b8; font-style: italic; margin: .8rem 0; }
+    .prose-chat h1, .prose-chat h2, .prose-chat h3 { font-family: 'Space Grotesk', sans-serif; font-weight: 600; color: #fff; margin: 1rem 0 .4rem; line-height: 1.3; }
+    .prose-chat h1 { font-size: 1.25em; }
+    .prose-chat h2 { font-size: 1.1em; }
+    .prose-chat h3 { font-size: 1em; }
+    .prose-chat table { width: 100%; border-collapse: collapse; margin: .9rem 0; font-size: .85em; }
+    .prose-chat th, .prose-chat td { border: 1px solid rgba(255,255,255,.1); padding: .45rem .7rem; text-align: left; }
+    .prose-chat th { background: rgba(255,255,255,.05); color: #fff; font-weight: 600; }
+    .prose-chat a  { color: #818cf8; text-decoration: underline; text-decoration-color: rgba(129,140,248,.4); }
+    .prose-chat hr { border: none; border-top: 1px solid rgba(255,255,255,.1); margin: 1rem 0; }
+    .prose-chat strong { color: #fff; font-weight: 600; }
+    .prose-chat em     { color: #94a3b8; }
+
+    /* ── Code block header ── */
+    .code-wrap   { position: relative; }
+    .code-header { display: flex; justify-content: space-between; align-items: center; padding: .4rem 1rem; background: #0d0b1a; border-bottom: 1px solid rgba(255,255,255,.07); font-family: 'JetBrains Mono', monospace; font-size: .72rem; }
+    .code-body   { background: #080612; padding: 1rem; overflow-x: auto; }
+
+    /* ── Typing dots ── */
+    .typing-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #6b6eff; margin: 0 2px; animation: typingBounce .9s ease-in-out infinite; }
+    .typing-dot:nth-child(2) { animation-delay: .15s; }
+    .typing-dot:nth-child(3) { animation-delay: .3s; }
+    @keyframes typingBounce { 0%,80%,100%{ transform: scale(.7); opacity:.5; } 40%{ transform: scale(1); opacity:1; } }
+
+    /* ── Toast ── */
+    .toast { position: fixed; bottom: 1.5rem; right: 1.5rem; z-index: 9999; padding: .7rem 1.1rem; border-radius: 12px; font-size: .8rem; font-weight: 500; display: flex; align-items: center; gap: .5rem; animation: toastIn .3s ease both; }
+    @keyframes toastIn { from{opacity:0;transform:translateY(12px)} to{opacity:1;transform:translateY(0)} }
+    .toast-success { background: rgba(16,185,129,.18); border: 1px solid rgba(16,185,129,.35); color: #6ee7b7; }
+    .toast-error   { background: rgba(239,68,68,.18);  border: 1px solid rgba(239,68,68,.35);  color: #fca5a5; }
+    .toast-info    { background: rgba(85,72,247,.18);  border: 1px solid rgba(85,72,247,.35);  color: #a5b4fc; }
+
+    /* ── Drag overlay ── */
+    .drag-overlay { animation: fadeIn .15s ease; }
+    @keyframes fadeIn { from{opacity:0} to{opacity:1} }
+
+    /* ── Gradient mesh background ── */
+    .bg-mesh { background: radial-gradient(ellipse 60% 50% at 80% 10%, rgba(85,72,247,.12) 0%, transparent 65%), radial-gradient(ellipse 50% 40% at 10% 85%, rgba(59,130,246,.08) 0%, transparent 60%), #050508; }
+
+    /* ── Message animation ── */
+    .msg-enter { animation: slideIn .32s cubic-bezier(.16,1,.3,1) both; }
+    @keyframes slideIn { from{opacity:0;transform:translateY(12px) scale(.98)} to{opacity:1;transform:translateY(0) scale(1)} }
+
+    /* ── Shimmer loading ── */
+    .shimmer-line { background: linear-gradient(90deg, rgba(255,255,255,.04) 25%, rgba(255,255,255,.1) 50%, rgba(255,255,255,.04) 75%); background-size: 200% 100%; animation: shimmer 1.8s infinite; border-radius: 6px; }
+
+    /* ── Settings modal ── */
+    .modal-backdrop { animation: fadeIn .2s ease; }
+    .modal-card     { animation: slideIn .25s cubic-bezier(.16,1,.3,1) both; }
+
+    /* ── Suggested prompt pill ── */
+    .prompt-pill { transition: all .18s ease; }
+    .prompt-pill:hover { background: rgba(85,72,247,.2); border-color: rgba(85,72,247,.5); color: #c7d2fe; transform: translateY(-1px); }
+
+    /* ── Select ── */
+    select option { background: #0d0b1a; color: #e2e8f0; }
+
+    /* ── Textarea auto-grow ── */
+    textarea { field-sizing: content; }
+
+    /* ── Focus ring ── */
+    button:focus-visible { outline: 2px solid rgba(85,72,247,.7); outline-offset: 2px; }
+  </style>
+</head>
+
+<body class="bg-mesh min-h-screen flex flex-col antialiased">
+  <div id="root" class="flex flex-col min-h-screen flex-1"></div>
+
+  <script type="text/babel">
+  "use strict";
+  const { useState, useEffect, useRef, useCallback, useMemo, Fragment } = React;
+
+  /* ══════════════════════════════════════════
+     CONSTANTS & DATA
+  ══════════════════════════════════════════ */
+  const MODELS = [
+    { id: 'gpt-4.1-mini',  name: 'GPT-4.1 Mini',  subtitle: 'Fast & Efficient',       badge: 'FAST'     },
+    { id: 'gpt-4.1',       name: 'GPT-4.1',        subtitle: 'Balanced Intelligence',  badge: 'SMART'    },
+    { id: 'gpt-5-mini',    name: 'GPT-5 Mini',     subtitle: 'Next-Gen Compact',       badge: 'NEW'      },
+    { id: 'gpt-5',         name: 'GPT-5',          subtitle: 'Frontier Reasoning',     badge: 'APEX'     },
+  ];
+
+  const PERSONALITIES = [
+    { id: 'assistant', name: 'Aether General',       color: '#818cf8', icon: '✦',
+      description: 'Empathetic, balanced, articulate.',
+      prompt: 'You are Aether, a highly helpful, intelligent AI assistant. Respond clearly and concisely. Be warm, helpful, and thorough.' },
+    { id: 'coder',     name: 'Nexus Compiler',       color: '#34d399', icon: '⌥',
+      description: 'Elite programmer & system architect.',
+      prompt: 'You are Nexus, an elite software architect. Write clean, production-ready, well-commented code. Explain architectural decisions. Prefer TypeScript, modern patterns, and best practices.' },
+    { id: 'teacher',   name: 'Scholar Prism',        color: '#fbbf24', icon: '◈',
+      description: 'Patient educator who simplifies complexity.',
+      prompt: 'You are Scholar Prism, a patient and knowledgeable teacher. Break down complex topics step-by-step. Use analogies, examples, and clear explanations. Check for understanding.' },
+    { id: 'creative',  name: 'Vortex Creative',      color: '#f472b6', icon: '✿',
+      description: 'Imaginative storyteller & creative writer.',
+      prompt: 'You are Vortex, a wildly imaginative creative writer. Generate vivid, evocative prose. Embrace metaphor, narrative tension, and unexpected ideas. Push creative boundaries.' },
+    { id: 'cyber',     name: 'Ghost Protocol',       color: '#22d3ee', icon: '◎',
+      description: 'SecOps expert & Linux systems specialist.',
+      prompt: 'You are Ghost Protocol, a cybersecurity and systems expert. Speak with precision and directness. Format technical outputs as terminal blocks. Discuss security, Linux, networks, and threat vectors.' },
+  ];
+
+  const SUGGESTED_PROMPTS = [
+    { label: '⚡ Explain quantum computing simply', text: 'Explain quantum computing in simple terms, as if talking to someone with no technical background.' },
+    { label: '🔐 Write a secure API endpoint', text: 'Write a secure REST API endpoint in Node.js with authentication, input validation, and error handling.' },
+    { label: '✍️ Draft a product launch email', text: 'Draft a compelling product launch announcement email for a new AI productivity tool targeting developers.' },
+    { label: '🔍 Debug this logic error', text: 'Help me think through debugging strategies for a complex async race condition in JavaScript.' },
+    { label: '🌍 Explain climate change solutions', text: 'What are the most promising technological solutions to climate change, and what are their trade-offs?' },
+    { label: '📊 Analyze a business idea', text: 'Help me analyze the strengths, weaknesses, opportunities, and threats of a SaaS product for freelancers.' },
+  ];
+
+  const STORAGE_KEYS = {
+    sessions:      'aether_v2_sessions',
+    activeId:      'aether_v2_active',
+    model:         'aether_v2_model',
+    personality:   'aether_v2_personality',
+    customPrompt:  'aether_v2_custom_prompt',
+    apiEndpoint:   'aether_v2_endpoint',
+  };
+
+  /* ══════════════════════════════════════════
+     HELPERS
+  ══════════════════════════════════════════ */
+  const uid  = () => `${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
+  const now  = () => Date.now();
+  const fmtTime = ts => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const fmtSize = bytes => bytes < 1024 ? `${bytes}B` : bytes < 1048576 ? `${(bytes/1024).toFixed(1)}KB` : `${(bytes/1048576).toFixed(1)}MB`;
+
+  function buildIntro(persName) {
+    return [{
+      id: 'intro-' + uid(),
+      role: 'assistant',
+      content: `### Connection Established ✦\n\nI am **${persName}** — your secure cognitive interface. Ready to assist.\n\nDrop files, paste code, or start a conversation. How can I augment your workflow?`,
+      timestamp: now(),
+    }];
+  }
+
+  function buildSession(model, persId, existing = []) {
+    const p = PERSONALITIES.find(x => x.id === persId) || PERSONALITIES[0];
+    return {
+      id: 'sess-' + uid(),
+      title: 'New Conversation',
+      messages: existing.length ? existing : buildIntro(p.name),
+      model,
+      personality: persId,
+      systemPrompt: p.prompt,
+      createdAt: now(),
+    };
+  }
+
+  function readLS(key, fallback) {
+    try { const v = localStorage.getItem(key); return v !== null ? JSON.parse(v) : fallback; }
+    catch { return fallback; }
+  }
+
+  /* ══════════════════════════════════════════
+     MARKDOWN RENDERER
+  ══════════════════════════════════════════ */
+  function MarkdownRenderer({ content }) {
+    const containerRef = useRef(null);
+
+    const html = useMemo(() => {
+      try {
+        return marked.parse(content, { gfm: true, breaks: true });
+      } catch { return content; }
+    }, [content]);
+
+    useEffect(() => {
+      if (!containerRef.current) return;
+      containerRef.current.querySelectorAll('pre:not([data-enhanced])').forEach(pre => {
+        pre.setAttribute('data-enhanced', '1');
+        const code = pre.querySelector('code');
+        if (!code) return;
+        const text = code.innerText;
+        const langClass = Array.from(code.classList).find(c => c.startsWith('language-'));
+        const lang = langClass ? langClass.replace('language-','').toUpperCase() : 'CODE';
+        const btnId = 'cpbtn-' + uid();
+
+        const wrap = document.createElement('div');
+        wrap.className = 'code-wrap rounded-xl overflow-hidden my-3 border border-white/8 shadow-2xl shadow-black/60';
+        wrap.innerHTML = `<div class="code-header"><span style="color:#a5b4fc;font-weight:700;letter-spacing:.08em">${lang}</span><button id="${btnId}" class="text-slate-400 hover:text-white px-2 py-0.5 rounded hover:bg-white/10 transition text-xs cursor-pointer">Copy</button></div>`;
+        pre.style.cssText = 'margin:0;border-radius:0;';
+        pre.parentNode && pre.parentNode.insertBefore(wrap, pre);
+        wrap.appendChild(pre);
+
+        const btn = document.getElementById(btnId);
+        if (btn) btn.onclick = () => {
+          navigator.clipboard.writeText(text).then(() => {
+            btn.textContent = '✓ Copied!';
+            btn.style.color = '#34d399';
+            setTimeout(() => { btn.textContent = 'Copy'; btn.style.color = ''; }, 2000);
+          });
+        };
+      });
+    }, [html]);
+
+    return (
+      <div
+        ref={containerRef}
+        className="prose-chat text-sm leading-relaxed max-w-none"
+        dangerouslySetInnerHTML={{ __html: html }}
+      />
+    );
+  }
+
+  /* ══════════════════════════════════════════
+     TOAST SYSTEM
+  ══════════════════════════════════════════ */
+  let _toastSetter = null;
+  function toast(msg, type = 'info', duration = 2800) {
+    if (_toastSetter) _toastSetter({ msg, type, id: uid() });
+    setTimeout(() => { if (_toastSetter) _toastSetter(null); }, duration);
+  }
+
+  function ToastHost() {
+    const [t, setT] = useState(null);
+    _toastSetter = setT;
+    if (!t) return null;
+    const cls = t.type === 'success' ? 'toast-success' : t.type === 'error' ? 'toast-error' : 'toast-info';
+    return <div className={`toast ${cls}`}>{t.type === 'success' ? '✓' : t.type === 'error' ? '⚠' : 'ℹ'} {t.msg}</div>;
+  }
+
+  /* ══════════════════════════════════════════
+     ICONS (inline SVGs)
+  ══════════════════════════════════════════ */
+  const I = {
+    Send:      () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>,
+    Plus:      () => <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>,
+    Trash:     () => <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>,
+    Settings:  () => <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>,
+    Chat:      () => <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>,
+    Bot:       () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><circle cx="12" cy="5" r="2"/><path d="M12 7v4"/><line x1="8" y1="16" x2="8" y2="16"/><line x1="16" y1="16" x2="16" y2="16"/></svg>,
+    User:      () => <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>,
+    Copy:      () => <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>,
+    Clip:      () => <svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>,
+    X:         () => <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>,
+    Alert:     () => <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>,
+    Refresh:   () => <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3.86"/></svg>,
+    Stop:      () => <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>,
+    Menu:      () => <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>,
+    Star:      () => <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>,
+    Check:     () => <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>,
+    ChevronDown: () => <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="6 9 12 15 18 9"/></svg>,
+    File:      () => <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>,
+    Spark:     () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2L9.5 9.5 2 12l7.5 2.5L12 22l2.5-7.5L22 12l-7.5-2.5L12 2z"/></svg>,
+  };
+
+  /* ══════════════════════════════════════════
+     ABORT CONTROLLER REF
+  ══════════════════════════════════════════ */
+  let _abortController = null;
+
+  /* ══════════════════════════════════════════
+     MAIN APP
+  ══════════════════════════════════════════ */
+  function App() {
+    /* ── Persistent config ── */
+    const [model,       setModel]       = useState(() => readLS(STORAGE_KEYS.model,       'gpt-4.1-mini'));
+    const [persId,      setPersId]      = useState(() => readLS(STORAGE_KEYS.personality,  'assistant'));
+    const [customPmt,   setCustomPmt]   = useState(() => readLS(STORAGE_KEYS.customPrompt, ''));
+    const [apiEndpoint, setApiEndpoint] = useState(() => readLS(STORAGE_KEYS.apiEndpoint,  '/api/chat'));
+
+    /* ── Sessions ── */
+    const [sessions, setSessions] = useState(() => {
+      const saved = readLS(STORAGE_KEYS.sessions, null);
+      if (saved && Array.isArray(saved) && saved.length > 0) return saved;
+      return [buildSession('gpt-4.1-mini', 'assistant')];
+    });
+    const [activeId, setActiveId] = useState(() => {
+      const cached = readLS(STORAGE_KEYS.activeId, null);
+      const s = readLS(STORAGE_KEYS.sessions, null);
+      if (cached && s && s.find && s.find(x => x.id === cached)) return cached;
+      return sessions[0]?.id;
+    });
+
+    /* ── UI state ── */
+    const [sidebarOpen,  setSidebarOpen]  = useState(() => window.innerWidth >= 1024);
+    const [settingsOpen, setSettingsOpen] = useState(false);
+    const [input,        setInput]        = useState('');
+    const [generating,   setGenerating]   = useState(false);
+    const [error,        setError]        = useState(null);
+    const [dragActive,   setDragActive]   = useState(false);
+    const [files,        setFiles]        = useState([]);
+    const [charCount,    setCharCount]    = useState(0);
+
+    const bottomRef  = useRef(null);
+    const inputRef   = useRef(null);
+    const fileRef    = useRef(null);
+
+    /* ── Persist to localStorage ── */
+    useEffect(() => { try { localStorage.setItem(STORAGE_KEYS.sessions, JSON.stringify(sessions)); } catch {} }, [sessions]);
+    useEffect(() => { try { localStorage.setItem(STORAGE_KEYS.activeId, JSON.stringify(activeId)); } catch {} }, [activeId]);
+    useEffect(() => { try { localStorage.setItem(STORAGE_KEYS.model, JSON.stringify(model)); } catch {} }, [model]);
+    useEffect(() => { try { localStorage.setItem(STORAGE_KEYS.personality, JSON.stringify(persId)); } catch {} }, [persId]);
+    useEffect(() => { try { localStorage.setItem(STORAGE_KEYS.customPrompt, JSON.stringify(customPmt)); } catch {} }, [customPmt]);
+    useEffect(() => { try { localStorage.setItem(STORAGE_KEYS.apiEndpoint, JSON.stringify(apiEndpoint)); } catch {} }, [apiEndpoint]);
+
+    /* ── Responsive sidebar ── */
+    useEffect(() => {
+      const onResize = () => window.innerWidth < 1024 && setSidebarOpen(false);
+      window.addEventListener('resize', onResize);
+      return () => window.removeEventListener('resize', onResize);
+    }, []);
+
+    /* ── Keyboard shortcuts ── */
+    useEffect(() => {
+      const handler = e => {
+        if ((e.metaKey || e.ctrlKey) && e.key === 'k') { e.preventDefault(); createSession(); }
+        if ((e.metaKey || e.ctrlKey) && e.key === '/') { e.preventDefault(); inputRef.current?.focus(); }
+        if (e.key === 'Escape') { setSettingsOpen(false); setSidebarOpen(false); }
+      };
+      window.addEventListener('keydown', handler);
+      return () => window.removeEventListener('keydown', handler);
+    }, []);
+
+    /* ── Derived ── */
+    const session  = useMemo(() => sessions.find(s => s.id === activeId) || sessions[0], [sessions, activeId]);
+    const pers     = useMemo(() => PERSONALITIES.find(p => p.id === (session?.personality || persId)) || PERSONALITIES[0], [session, persId]);
+    const modelObj = useMemo(() => MODELS.find(m => m.id === (session?.model || model)) || MODELS[0], [session, model]);
+
+    /* ── Auto-scroll ── */
+    const scrollBottom = useCallback(() => {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    }, []);
+
+    useEffect(() => { scrollBottom(); }, [session?.messages?.length, generating]);
+
+    /* ── Session management ── */
+    const createSession = useCallback(() => {
+      const s = buildSession(model, persId);
+      setSessions(p => [s, ...p]);
+      setActiveId(s.id);
+      setFiles([]);
+      setInput('');
+      if (window.innerWidth < 1024) setSidebarOpen(false);
+      setTimeout(() => inputRef.current?.focus(), 80);
+    }, [model, persId]);
+
+    const deleteSession = useCallback((id, e) => {
+      e.stopPropagation();
+      setSessions(prev => {
+        const next = prev.filter(s => s.id !== id);
+        if (!next.length) {
+          const ns = buildSession(model, persId);
+          setActiveId(ns.id);
+          return [ns];
+        }
+        if (activeId === id) setActiveId(next[0].id);
+        return next;
+      });
+    }, [activeId, model, persId]);
+
+    const clearHistory = useCallback(() => {
+      if (!confirm('Delete all conversations? This cannot be undone.')) return;
+      const ns = buildSession(model, persId);
+      setSessions([ns]);
+      setActiveId(ns.id);
+      toast('All conversations cleared', 'info');
+    }, [model, persId]);
+
+    const updateSession = useCallback(updates => {
+      setSessions(prev => prev.map(s => s.id === activeId ? { ...s, ...updates } : s));
+    }, [activeId]);
+
+    /* ── File handling ── */
+    const readFiles = useCallback(fileList => {
+      Array.from(fileList).forEach(file => {
+        const meta = { id: uid(), name: file.name, type: file.type || 'application/octet-stream', size: fmtSize(file.size) };
+        const reader = new FileReader();
+        if (file.type.startsWith('image/')) {
+          reader.onload = e => {
+            if (typeof e.target.result === 'string') {
+              setFiles(p => [...p, { ...meta, base64: e.target.result.split(',')[1], preview: e.target.result }]);
+            }
+          };
+          reader.readAsDataURL(file);
+        } else {
+          reader.onload = e => {
+            if (typeof e.target.result === 'string') {
+              setFiles(p => [...p, { ...meta, content: e.target.result, preview: null }]);
+            }
+          };
+          reader.readAsText(file);
+        }
+      });
+    }, []);
+
+    const onDragEnter  = e => { e.preventDefault(); e.stopPropagation(); setDragActive(true); };
+    const onDragLeave  = e => { e.preventDefault(); e.stopPropagation(); setDragActive(false); };
+    const onDragOver   = e => { e.preventDefault(); e.stopPropagation(); };
+    const onDrop       = e => { e.preventDefault(); e.stopPropagation(); setDragActive(false); if (e.dataTransfer.files.length) readFiles(e.dataTransfer.files); };
+    const removeFile   = id => setFiles(p => p.filter(f => f.id !== id));
+
+    /* ── Send message ── */
+    const sendMessage = useCallback(async (overrideText) => {
+      const text = (overrideText !== undefined ? overrideText : input).trim();
+      if ((!text && !files.length) || generating) return;
+
+      setError(null);
+      setGenerating(true);
+      setInput('');
+      setCharCount(0);
+      setFiles([]);
+
+      const userMsg = {
+        id: 'u-' + uid(),
+        role: 'user',
+        content: text,
+        timestamp: now(),
+        attachedFiles: files.map(f => ({ name: f.name, type: f.type, size: f.size, data: f.base64 || undefined, content: f.content, preview: f.preview })),
+      };
+
+      const asstId = 'a-' + uid();
+      const asstMsg = {
+        id: asstId,
+        role: 'assistant',
+        content: '',
+        timestamp: now() + 1,
+        model: session?.model || model,
+        streaming: true,
+      };
+
+      const prevMsgs = session?.messages || [];
+      let title = session?.title;
+      if (!title || title === 'New Conversation') {
+        title = text.length > 32 ? text.slice(0, 32) + '…' : text || 'Attached Files';
+      }
+
+      setSessions(prev => prev.map(s => s.id === activeId
+        ? { ...s, title, messages: [...prevMsgs, userMsg, asstMsg] }
+        : s
+      ));
+
+      /* Build payload */
+      const activePersSys = customPmt || pers.prompt;
+      const payload = {
+        messages: [...prevMsgs, userMsg].map(m => ({
+          role: m.role,
+          content: m.content + (m.attachedFiles?.length
+            ? '\n\n[Attached files: ' + m.attachedFiles.map(f => f.name + (f.content ? ' — ' + f.content.slice(0,400) : '')).join('; ') + ']'
+            : ''),
+          attachedFiles: (m.attachedFiles || []).filter(f => f.data).map(f => ({ name: f.name, type: f.type, data: f.data })),
+        })),
+        model: session?.model || model,
+        personality: session?.personality || persId,
+        systemInstruction: activePersSys,
+      };
+
+      try {
+        _abortController = new AbortController();
+        const res = await fetch(apiEndpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+          signal: _abortController.signal,
+        });
+
+        if (!res.ok) {
+          const errBody = await res.json().catch(() => ({}));
+          throw new Error(errBody.error || `HTTP ${res.status}`);
+        }
+
+        const ct = res.headers.get('content-type') || '';
+
+        if (ct.includes('text/event-stream')) {
+          const reader = res.body.getReader();
+          const dec = new TextDecoder();
+          let acc = '';
+          let buf = '';
+
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buf += dec.decode(value, { stream: true });
+            const lines = buf.split('\n');
+            buf = lines.pop() || '';
+            for (const line of lines) {
+              const clean = line.trim();
+              if (!clean || !clean.startsWith('data:')) continue;
+              const raw = clean.slice(5).trim();
+              if (raw === '[DONE]') continue;
+              try {
+                const parsed = JSON.parse(raw);
+                if (parsed.error) throw new Error(parsed.error);
+                if (parsed.text) {
+                  acc += parsed.text;
+                  setSessions(prev => prev.map(s => s.id === activeId
+                    ? { ...s, messages: s.messages.map(m => m.id === asstId ? { ...m, content: acc, streaming: true } : m) }
+                    : s
+                  ));
+                }
+              } catch {}
+            }
+          }
+
+          setSessions(prev => prev.map(s => s.id === activeId
+            ? { ...s, messages: s.messages.map(m => m.id === asstId ? { ...m, streaming: false } : m) }
+            : s
+          ));
+
+        } else {
+          const data = await res.json();
+          const reply = data.reply || data.text || data.content || 'No response received.';
+          setSessions(prev => prev.map(s => s.id === activeId
+            ? { ...s, messages: s.messages.map(m => m.id === asstId ? { ...m, content: reply, streaming: false } : m) }
+            : s
+          ));
+        }
+
+      } catch (err) {
+        if (err.name === 'AbortError') {
+          setSessions(prev => prev.map(s => s.id === activeId
+            ? { ...s, messages: s.messages.map(m => m.id === asstId ? { ...m, content: m.content || '*(Generation stopped)*', streaming: false } : m) }
+            : s
+          ));
+        } else {
+          const msg = err.message || 'Unknown error';
+          setError(msg);
+          setSessions(prev => prev.map(s => s.id === activeId
+            ? { ...s, messages: s.messages.map(m => m.id === asstId ? { ...m, content: `⚠️ **Error**: ${msg}\n\nCheck your API endpoint and Cloudflare Worker configuration.`, streaming: false, isError: true } : m) }
+            : s
+          ));
+          toast(msg, 'error');
+        }
+      } finally {
+        _abortController = null;
+        setGenerating(false);
+        setTimeout(() => inputRef.current?.focus(), 80);
+      }
+    }, [input, files, generating, session, activeId, model, persId, pers, customPmt, apiEndpoint]);
+
+    const stopGeneration = () => {
+      if (_abortController) { _abortController.abort(); toast('Generation stopped', 'info'); }
+    };
+
+    const resubmit = useCallback(idx => {
+      if (generating) return;
+      const msgs = session?.messages || [];
+      const msg = msgs[idx];
+      if (!msg || msg.role !== 'user') return;
+      updateSession({ messages: msgs.slice(0, idx) });
+      setInput(msg.content);
+      if (msg.attachedFiles?.length) {
+        setFiles(msg.attachedFiles.map(f => ({ id: uid(), name: f.name, type: f.type, size: f.size, base64: f.data, content: f.content, preview: f.preview })));
+      }
+    }, [generating, session, updateSession]);
+
+    const copyText = text => {
+      navigator.clipboard.writeText(text).then(() => toast('Copied to clipboard', 'success'));
+    };
+
+    const regenerate = useCallback(() => {
+      const msgs = session?.messages || [];
+      const lastUser = [...msgs].reverse().find(m => m.role === 'user');
+      if (!lastUser) return;
+      const idx = msgs.lastIndexOf(lastUser);
+      updateSession({ messages: msgs.slice(0, idx) });
+      sendMessage(lastUser.content);
+    }, [session, updateSession, sendMessage]);
+
+    /* ── Input handler ── */
+    const onInputChange = e => {
+      setInput(e.target.value);
+      setCharCount(e.target.value.length);
+    };
+
+    const onKeyDown = e => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+    };
+
+    /* ═════════════════════════════════════
+       RENDER
+    ═════════════════════════════════════ */
+    return (
+      <div className="flex flex-col min-h-screen" onDragEnter={onDragEnter}>
+
+        {/* AMBIENT BACKGROUND */}
+        <div className="fixed inset-0 pointer-events-none z-0 overflow-hidden">
+          <div className="absolute top-[-20%] right-[-8%] w-[600px] h-[600px] rounded-full" style={{ background: 'radial-gradient(circle, rgba(85,72,247,.14) 0%, transparent 70%)' }}/>
+          <div className="absolute bottom-[-15%] left-[-10%] w-[500px] h-[500px] rounded-full" style={{ background: 'radial-gradient(circle, rgba(59,130,246,.09) 0%, transparent 70%)' }}/>
+          <div className="absolute top-[40%] left-[45%] w-[300px] h-[300px] rounded-full" style={{ background: 'radial-gradient(circle, rgba(244,114,182,.05) 0%, transparent 70%)' }}/>
+        </div>
+
+        {/* HEADER */}
+        <header className="h-14 shrink-0 border-b border-white/[0.07] glass-dark flex items-center justify-between px-4 z-40 relative">
+          <div className="flex items-center gap-3">
+            <button onClick={() => setSidebarOpen(v => !v)} className="p-1.5 hover:bg-white/[0.06] rounded-lg text-slate-400 hover:text-white transition cursor-pointer" title="Toggle sidebar (⌘K)">
+              <I.Menu />
+            </button>
+            <div className="flex items-center gap-2">
+              <div className="w-7 h-7 rounded-lg flex items-center justify-center" style={{ background: 'linear-gradient(135deg, #5548f7, #818cf8)' }}>
+                <I.Spark />
+              </div>
+              <div>
+                <div className="font-display font-semibold text-white text-sm tracking-wide leading-none">AetherChat</div>
+                <div className="text-[9px] font-mono text-slate-500 tracking-widest uppercase leading-none mt-0.5">Cognitive Portal</div>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/[0.04] border border-white/[0.07] text-[11px] font-mono text-slate-400">
+              <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+              <span>{pers.name}</span>
+              <span className="text-white/30">·</span>
+              <span className="text-aether-400">{modelObj.name}</span>
+            </div>
+            <button onClick={() => setSettingsOpen(true)} className="p-1.5 hover:bg-white/[0.06] rounded-lg text-slate-400 hover:text-white transition cursor-pointer flex items-center gap-1.5 text-xs font-mono border border-white/[0.07] px-3" title="Settings">
+              <I.Settings /> <span className="hidden sm:inline">Settings</span>
+            </button>
+          </div>
+        </header>
+
+        {/* BODY */}
+        <div className="flex-1 flex overflow-hidden z-10 relative">
+
+          {/* SIDEBAR */}
+          <aside className={`fixed inset-y-0 left-0 top-14 lg:relative lg:top-0 z-40 w-64 shrink-0 border-r border-white/[0.07] glass-dark flex flex-col sidebar-transition ${sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:hidden'}`}>
+            <div className="flex-1 flex flex-col p-3 overflow-y-auto min-h-0">
+
+              {/* New Chat */}
+              <button onClick={createSession} className="w-full py-2 px-3 rounded-xl text-sm font-semibold text-white flex items-center justify-center gap-2 transition cursor-pointer active:scale-[.98]" style={{ background: 'linear-gradient(135deg,#5548f7,#818cf8)', boxShadow: '0 4px 20px rgba(85,72,247,.3)' }}>
+                <I.Plus /> New Conversation <span className="ml-auto text-white/40 text-[10px] font-mono hidden lg:block">⌘K</span>
+              </button>
+
+              {/* Model/Personality quick selects */}
+              <div className="mt-3 space-y-2">
+                <div>
+                  <label className="text-[9px] uppercase tracking-widest text-slate-500 font-bold block mb-1">Model</label>
+                  <select value={session?.model || model} onChange={e => { updateSession({ model: e.target.value }); setModel(e.target.value); }} className="w-full bg-black/40 border border-white/[0.08] rounded-lg px-2.5 py-1.5 text-xs font-mono text-aether-300 input-glow cursor-pointer">
+                    {MODELS.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[9px] uppercase tracking-widest text-slate-500 font-bold block mb-1">Personality</label>
+                  <select value={session?.personality || persId} onChange={e => { const p = PERSONALITIES.find(x => x.id === e.target.value); updateSession({ personality: e.target.value, systemPrompt: p?.prompt }); setPersId(e.target.value); }} className="w-full bg-black/40 border border-white/[0.08] rounded-lg px-2.5 py-1.5 text-xs font-mono text-emerald-400 input-glow cursor-pointer">
+                    {PERSONALITIES.map(p => <option key={p.id} value={p.id}>{p.icon} {p.name}</option>)}
+                  </select>
+                </div>
+              </div>
+
+              {/* History */}
+              <div className="mt-4 flex-1 flex flex-col min-h-0">
+                <div className="flex items-center justify-between mb-2 px-0.5">
+                  <span className="text-[9px] uppercase tracking-widest text-slate-500 font-bold">History</span>
+                  <button onClick={clearHistory} className="text-[9px] text-slate-600 hover:text-red-400 transition cursor-pointer px-1 py-0.5 rounded hover:bg-red-500/10">Clear all</button>
+                </div>
+                <div className="flex-1 overflow-y-auto space-y-1 pr-0.5">
+                  {sessions.map(s => {
+                    const isActive = s.id === activeId;
+                    const p = PERSONALITIES.find(x => x.id === s.personality) || PERSONALITIES[0];
+                    return (
+                      <div key={s.id} onClick={() => { setActiveId(s.id); if (window.innerWidth < 1024) setSidebarOpen(false); }} className={`group relative flex items-center gap-2 p-2 rounded-lg cursor-pointer transition ${isActive ? 'bg-aether-500/15 border border-aether-500/30' : 'border border-transparent hover:bg-white/[0.03] hover:border-white/[0.06]'}`}>
+                        <div className={`shrink-0 w-6 h-6 rounded-md flex items-center justify-center text-xs ${isActive ? 'bg-aether-500/30 text-aether-300' : 'bg-white/[0.05] text-slate-500'}`}>{p.icon}</div>
+                        <div className="flex-1 min-w-0">
+                          <div className="text-xs font-medium truncate" style={{ color: isActive ? '#e2e8f0' : '#94a3b8' }}>{s.title}</div>
+                          <div className="text-[9px] font-mono text-slate-600 truncate">{s.messages?.length || 0} msgs</div>
+                        </div>
+                        <button onClick={e => deleteSession(s.id, e)} className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-red-500/20 text-slate-600 hover:text-red-400 transition-all cursor-pointer absolute right-2 top-1/2 -translate-y-1/2">
+                          <I.Trash />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            {/* Sidebar footer */}
+            <div className="p-3 border-t border-white/[0.06]">
+              <div className="flex items-center gap-2 p-2 rounded-lg bg-white/[0.03] border border-white/[0.06]">
+                <div className="w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-bold font-display" style={{ background: 'linear-gradient(135deg,#5548f7,#f472b6)' }}>A</div>
+                <div>
+                  <div className="text-xs font-semibold text-white">Aether User</div>
+                  <div className="text-[9px] font-mono text-slate-500">CF Worker Bridge</div>
+                </div>
+                <div className="ml-auto flex items-center gap-1 text-[9px] font-mono text-emerald-400">
+                  <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                  LIVE
+                </div>
+              </div>
+              <div className="mt-2 flex items-center justify-between text-[9px] font-mono text-slate-600">
+                <span>AetherChat v2.0</span>
+                <span>⌘/ to focus</span>
+              </div>
+            </div>
+          </aside>
+
+          {/* Sidebar backdrop (mobile) */}
+          {sidebarOpen && <div onClick={() => setSidebarOpen(false)} className="fixed inset-0 z-30 bg-black/60 backdrop-blur-sm lg:hidden" />}
+
+          {/* CHAT MAIN */}
+          <main className="flex-1 flex flex-col min-w-0 h-full overflow-hidden relative" onDragOver={onDragOver} onDrop={onDrop} onDragLeave={onDragLeave}>
+
+            {/* Drag overlay */}
+            {dragActive && (
+              <div className="absolute inset-3 z-50 rounded-2xl flex flex-col items-center justify-center drag-overlay" style={{ background: 'rgba(85,72,247,.1)', border: '2px dashed rgba(85,72,247,.5)', backdropFilter: 'blur(8px)' }}>
+                <div className="w-16 h-16 rounded-2xl flex items-center justify-center mb-4" style={{ background: 'rgba(85,72,247,.2)', border: '1px solid rgba(85,72,247,.3)' }}>
+                  <I.Clip />
+                </div>
+                <div className="text-lg font-display font-semibold text-white">Drop Files Here</div>
+                <div className="text-sm text-slate-400 mt-1">Images, text, code files</div>
+              </div>
+            )}
+
+            {/* Config bar */}
+            <div className="shrink-0 px-4 py-2 border-b border-white/[0.06] bg-black/20 flex items-center justify-between gap-3 flex-wrap">
+              <div className="flex items-center gap-3 flex-wrap">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] text-slate-500 font-mono">MODEL</span>
+                  <select value={session?.model || model} onChange={e => { updateSession({ model: e.target.value }); setModel(e.target.value); }} className="bg-black/50 border border-white/[0.08] text-aether-400 font-mono text-xs py-1 px-2 rounded-lg input-glow cursor-pointer">
+                    {MODELS.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                  </select>
+                </div>
+                <div className="w-px h-4 bg-white/10" />
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] text-slate-500 font-mono">PERSONA</span>
+                  <select value={session?.personality || persId} onChange={e => { const p = PERSONALITIES.find(x => x.id === e.target.value); updateSession({ personality: e.target.value, systemPrompt: p?.prompt }); setPersId(e.target.value); }} className="bg-black/50 border border-white/[0.08] text-emerald-400 font-mono text-xs py-1 px-2 rounded-lg input-glow cursor-pointer">
+                    {PERSONALITIES.map(p => <option key={p.id} value={p.id}>{p.icon} {p.name}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div className="flex items-center gap-3 text-[10px] font-mono text-slate-500">
+                <span>{session?.messages?.length || 0} msgs</span>
+                {generating && <span className="text-aether-400 animate-pulse">● Streaming</span>}
+              </div>
+            </div>
+
+            {/* MESSAGES */}
+            <div className="flex-1 overflow-y-auto px-4 md:px-8 py-6 space-y-1 min-h-0">
+
+              {/* Empty state with suggested prompts */}
+              {(!session?.messages?.length || session.messages.length === 0) && (
+                <div className="flex flex-col items-center justify-center text-center max-w-xl mx-auto h-full py-16">
+                  <div className="w-16 h-16 rounded-2xl flex items-center justify-center mb-5" style={{ background: 'linear-gradient(135deg,rgba(85,72,247,.2),rgba(129,140,248,.1))', border: '1px solid rgba(85,72,247,.25)' }}>
+                    <I.Spark />
+                  </div>
+                  <h2 className="font-display font-semibold text-xl text-white mb-2">Start a Conversation</h2>
+                  <p className="text-sm text-slate-400 mb-8">Ask anything or pick a suggestion below</p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 w-full">
+                    {SUGGESTED_PROMPTS.map((sp, i) => (
+                      <button key={i} onClick={() => sendMessage(sp.text)} className="prompt-pill text-left px-3 py-2.5 rounded-xl text-xs text-slate-400 border border-white/[0.07] bg-white/[0.02] cursor-pointer">
+                        {sp.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Message list */}
+              {session?.messages?.map((msg, idx) => {
+                const isUser = msg.role === 'user';
+                const isStreaming = msg.streaming;
+                const isError = msg.isError;
+                return (
+                  <div key={msg.id} className={`flex gap-3 max-w-4xl mx-auto py-2 msg-enter ${isUser ? 'justify-end' : 'justify-start'}`}>
+
+                    {/* Assistant avatar */}
+                    {!isUser && (
+                      <div className="shrink-0 w-8 h-8 rounded-lg flex items-center justify-center self-start mt-1 text-sm" style={{ background: 'linear-gradient(135deg,rgba(85,72,247,.25),rgba(129,140,248,.15))', border: '1px solid rgba(85,72,247,.3)', color: '#818cf8' }}>
+                        {pers.icon}
+                      </div>
+                    )}
+
+                    <div className={`flex flex-col max-w-[88%] ${isUser ? 'items-end' : 'items-start'}`}>
+
+                      {/* Meta row */}
+                      <div className="flex items-center gap-2 text-[9px] font-mono text-slate-600 mb-1">
+                        <span>{isUser ? 'You' : pers.name}</span>
+                        <span>·</span>
+                        <span>{fmtTime(msg.timestamp)}</span>
+                        {!isUser && msg.model && <><span>·</span><span className="text-aether-400 uppercase font-bold">{msg.model}</span></>}
+                      </div>
+
+                      {/* Bubble */}
+                      <div className={`relative rounded-2xl px-4 py-3 text-sm leading-relaxed shadow-lg ${
+                        isUser
+                          ? 'rounded-tr-sm text-slate-100'
+                          : isError
+                            ? 'rounded-tl-sm bg-red-950/30 border border-red-500/25 text-red-200'
+                            : 'rounded-tl-sm bg-white/[0.04] border border-white/[0.07] text-slate-100'
+                      }`} style={isUser ? { background: 'linear-gradient(135deg,rgba(85,72,247,.35),rgba(99,102,241,.25))', border: '1px solid rgba(85,72,247,.35)' } : {}}>
+
+                        {/* Attached files in user message */}
+                        {isUser && msg.attachedFiles?.length > 0 && (
+                          <div className="flex flex-wrap gap-1.5 mb-2">
+                            {msg.attachedFiles.map((f, fi) => (
+                              <div key={fi} className="flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] border border-white/[0.12] bg-black/30 text-slate-300">
+                                {f.preview ? <img src={f.preview} className="w-5 h-5 rounded object-cover" alt="" /> : <I.File />}
+                                <span className="max-w-[90px] truncate">{f.name}</span>
+                                <span className="text-slate-500">({f.size})</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* Content */}
+                        {isUser
+                          ? <div className="whitespace-pre-wrap break-words">{msg.content}</div>
+                          : isStreaming && !msg.content
+                            ? <div className="flex items-center gap-1 py-1"><span className="typing-dot"/><span className="typing-dot"/><span className="typing-dot"/></div>
+                            : <MarkdownRenderer content={msg.content || ''} />
+                        }
+
+                        {/* Streaming cursor */}
+                        {isStreaming && msg.content && (
+                          <span className="inline-block w-0.5 h-3.5 bg-aether-400 ml-0.5 align-middle animate-blink" />
+                        )}
+                      </div>
+
+                      {/* Action row */}
+                      <div className="flex items-center gap-3 mt-1 text-[10px] text-slate-600 hover:text-slate-400 transition-colors">
+                        {isUser ? (
+                          <button onClick={() => resubmit(idx)} className="flex items-center gap-1 hover:text-aether-400 transition cursor-pointer">
+                            <I.Refresh /> Edit & Resend
+                          </button>
+                        ) : (
+                          <>
+                            <button onClick={() => copyText(msg.content)} className="flex items-center gap-1 hover:text-aether-400 transition cursor-pointer">
+                              <I.Copy /> Copy
+                            </button>
+                            {idx === (session?.messages?.length || 0) - 1 && !generating && (
+                              <button onClick={regenerate} className="flex items-center gap-1 hover:text-aether-400 transition cursor-pointer">
+                                <I.Refresh /> Regenerate
+                              </button>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* User avatar */}
+                    {isUser && (
+                      <div className="shrink-0 w-8 h-8 rounded-lg flex items-center justify-center self-start mt-1 bg-white/[0.06] border border-white/[0.1] text-slate-400">
+                        <I.User />
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+
+              <div ref={bottomRef} />
+            </div>
+
+            {/* INPUT AREA */}
+            <div className="shrink-0 p-4 md:p-6 bg-gradient-to-t from-black/90 via-black/60 to-transparent relative z-20">
+              <div className="max-w-3xl mx-auto space-y-3">
+
+                {/* Attached files chips */}
+                {files.length > 0 && (
+                  <div className="flex flex-wrap gap-2 p-2.5 rounded-xl border border-white/[0.08] bg-black/50">
+                    {files.map(f => (
+                      <div key={f.id} className="flex items-center gap-1.5 pl-1.5 pr-1 py-1 rounded-lg text-[11px] border border-aether-500/25 bg-aether-500/10 text-aether-300 max-w-[200px]">
+                        {f.preview ? <img src={f.preview} className="w-6 h-6 rounded object-cover" alt="" /> : <div className="w-6 h-6 rounded bg-white/10 flex items-center justify-center"><I.File /></div>}
+                        <span className="truncate flex-1">{f.name}</span>
+                        <span className="text-slate-500 shrink-0">({f.size})</span>
+                        <button onClick={() => removeFile(f.id)} className="ml-1 hover:text-red-400 transition cursor-pointer shrink-0"><I.X /></button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Error banner */}
+                {error && (
+                  <div className="flex items-start gap-2 p-3 rounded-xl bg-red-950/30 border border-red-500/25 text-red-300 text-xs">
+                    <I.Alert />
+                    <div>
+                      <div className="font-semibold text-red-200">Connection Error</div>
+                      <div className="mt-0.5 text-red-400">{error}</div>
+                    </div>
+                    <button onClick={() => setError(null)} className="ml-auto text-red-500 hover:text-red-300 cursor-pointer"><I.X /></button>
+                  </div>
+                )}
+
+                {/* Suggested prompts (show when empty) */}
+                {session?.messages?.length <= 1 && !input && (
+                  <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-thin">
+                    {SUGGESTED_PROMPTS.slice(0,4).map((sp, i) => (
+                      <button key={i} onClick={() => sendMessage(sp.text)} className="prompt-pill shrink-0 text-[11px] text-slate-500 border border-white/[0.07] bg-white/[0.02] px-3 py-1.5 rounded-lg cursor-pointer whitespace-nowrap">
+                        {sp.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {/* Input box */}
+                <div className="relative group">
+                  <div className="absolute -inset-px rounded-2xl opacity-0 group-focus-within:opacity-100 transition-opacity duration-500 pointer-events-none" style={{ background: 'linear-gradient(135deg,rgba(85,72,247,.5),rgba(129,140,248,.3))', filter: 'blur(2px)' }} />
+                  <div className="relative flex items-end gap-2 bg-[#0a0915] border border-white/[0.09] rounded-2xl px-3 py-2.5 shadow-2xl">
+                    
+                    {/* Attach */}
+                    <button onClick={() => fileRef.current?.click()} className="p-1.5 text-slate-500 hover:text-aether-400 hover:bg-white/[0.06] rounded-xl transition cursor-pointer self-end mb-0.5" title="Attach file">
+                      <I.Clip />
+                    </button>
+                    <input ref={fileRef} type="file" multiple className="hidden" onChange={e => e.target.files && readFiles(e.target.files)} />
+
+                    {/* Textarea */}
+                    <textarea
+                      ref={inputRef}
+                      value={input}
+                      onChange={onInputChange}
+                      onKeyDown={onKeyDown}
+                      placeholder="Type a message… (Enter to send, Shift+Enter for newline)"
+                      rows={1}
+                      style={{ maxHeight: '10rem', resize: 'none', overflow: 'auto', fieldSizing: 'content' }}
+                      className="flex-1 bg-transparent text-slate-100 text-sm focus:outline-none placeholder:text-slate-600 leading-relaxed py-1 px-2"
+                    />
+
+                    {/* Char count */}
+                    {charCount > 200 && (
+                      <span className={`self-end mb-1 text-[10px] font-mono shrink-0 ${charCount > 3000 ? 'text-red-400' : 'text-slate-500'}`}>{charCount}</span>
+                    )}
+
+                    {/* Stop / Send */}
+                    {generating ? (
+                      <button onClick={stopGeneration} className="self-end mb-0.5 p-2 rounded-xl bg-red-500/20 border border-red-500/40 text-red-400 hover:bg-red-500/30 transition cursor-pointer" title="Stop generation">
+                        <I.Stop />
+                      </button>
+                    ) : (
+                      <button onClick={() => sendMessage()} disabled={!input.trim() && !files.length} className={`self-end mb-0.5 p-2 rounded-xl text-white transition cursor-pointer flex items-center gap-1.5 text-xs font-semibold px-3 ${!input.trim() && !files.length ? 'opacity-35 cursor-not-allowed bg-white/[0.06]' : 'hover:opacity-90 active:scale-[.97]'}`} style={input.trim() || files.length ? { background: 'linear-gradient(135deg,#5548f7,#818cf8)', boxShadow: '0 4px 15px rgba(85,72,247,.3)' } : {}} title="Send (Enter)">
+                        <I.Send /> <span className="hidden sm:inline">Send</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Footer hint */}
+                <div className="flex items-center justify-between text-[9px] font-mono text-slate-600 px-1">
+                  <span className="flex items-center gap-2">
+                    <span className="flex items-center gap-1"><div className="w-1 h-1 rounded-full bg-emerald-500" /> SECURE · CF WORKER</span>
+                    <span>·</span>
+                    <span>NO API KEY IN BROWSER</span>
+                  </span>
+                  <span>⌘/ focus · Shift+Enter newline</span>
+                </div>
+              </div>
+            </div>
+          </main>
+        </div>
+
+        {/* ═══════════════════════════════════════════
+            SETTINGS MODAL
+        ═══════════════════════════════════════════ */}
+        {settingsOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md modal-backdrop" onClick={e => e.target === e.currentTarget && setSettingsOpen(false)}>
+            <div className="w-full max-w-lg rounded-2xl overflow-hidden shadow-2xl border border-white/[0.1] modal-card" style={{ background: '#080612' }}>
+
+              {/* Header */}
+              <div className="flex items-center justify-between px-5 py-4 border-b border-white/[0.07]" style={{ background: 'rgba(85,72,247,.06)' }}>
+                <div className="flex items-center gap-2">
+                  <div className="p-1.5 rounded-lg bg-aether-500/20 text-aether-400"><I.Settings /></div>
+                  <div>
+                    <div className="font-display font-semibold text-white text-sm">Configuration</div>
+                    <div className="text-[9px] font-mono text-slate-500">GATEWAY · MODELS · PERSONAS</div>
+                  </div>
+                </div>
+                <button onClick={() => setSettingsOpen(false)} className="p-1.5 rounded-lg hover:bg-white/[0.07] text-slate-400 hover:text-white transition cursor-pointer"><I.X /></button>
+              </div>
+
+              {/* Body */}
+              <div className="p-5 space-y-5 overflow-y-auto max-h-[70vh]">
+
+                {/* API Endpoint */}
+                <div>
+                  <label className="text-[10px] uppercase tracking-widest text-slate-400 font-bold mb-1.5 block">Cloudflare Worker Endpoint</label>
+                  <input type="text" value={apiEndpoint} onChange={e => setApiEndpoint(e.target.value)} placeholder="/api/chat" className="w-full bg-black/50 border border-white/[0.09] rounded-xl px-3 py-2.5 text-xs font-mono text-aether-300 input-glow" />
+                  <p className="text-[10px] text-slate-500 mt-1.5 leading-relaxed">Route to your Cloudflare Worker. Use <code className="text-aether-400 px-1 py-0.5 rounded bg-aether-500/10">/api/chat</code> for same-origin or a full Worker URL.</p>
+                </div>
+
+                {/* Model selector */}
+                <div>
+                  <label className="text-[10px] uppercase tracking-widest text-slate-400 font-bold mb-2 block">Default Model</label>
+                  <div className="grid grid-cols-2 gap-2">
+                    {MODELS.map(m => (
+                      <button key={m.id} onClick={() => { setModel(m.id); updateSession({ model: m.id }); }} className={`text-left p-3 rounded-xl border transition cursor-pointer ${model === m.id ? 'bg-aether-500/15 border-aether-500/40 text-white' : 'border-white/[0.07] text-slate-400 hover:bg-white/[0.04] hover:border-white/[0.12]'}`}>
+                        <div className="flex items-center justify-between mb-0.5">
+                          <span className="text-xs font-semibold font-display">{m.name}</span>
+                          <span className="text-[8px] font-mono font-bold px-1.5 py-0.5 rounded-full" style={{ background: model === m.id ? 'rgba(85,72,247,.25)' : 'rgba(255,255,255,.05)', color: model === m.id ? '#a5b4fc' : '#64748b' }}>{m.badge}</span>
+                        </div>
+                        <div className="text-[10px] opacity-60">{m.subtitle}</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Personality selector */}
+                <div>
+                  <label className="text-[10px] uppercase tracking-widest text-slate-400 font-bold mb-2 block">Default Personality</label>
+                  <div className="space-y-1.5">
+                    {PERSONALITIES.map(p => (
+                      <button key={p.id} onClick={() => { setPersId(p.id); updateSession({ personality: p.id, systemPrompt: p.prompt }); }} className={`w-full text-left flex items-center gap-3 p-3 rounded-xl border transition cursor-pointer ${persId === p.id ? 'border-opacity-50 text-white' : 'border-white/[0.06] text-slate-400 hover:bg-white/[0.03]'}`} style={persId === p.id ? { background: `${p.color}18`, borderColor: `${p.color}40` } : {}}>
+                        <span className="text-lg" style={persId === p.id ? { color: p.color } : {}}>{p.icon}</span>
+                        <div className="flex-1 min-w-0">
+                          <div className="text-xs font-semibold">{p.name}</div>
+                          <div className="text-[10px] opacity-60 truncate">{p.description}</div>
+                        </div>
+                        {persId === p.id && <div style={{ color: p.color }}><I.Check /></div>}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Custom system prompt */}
+                <div>
+                  <label className="text-[10px] uppercase tracking-widest text-slate-400 font-bold mb-1.5 block">Custom System Prompt <span className="text-slate-600 normal-case">(overrides personality)</span></label>
+                  <textarea value={customPmt} onChange={e => setCustomPmt(e.target.value)} placeholder="e.g. Always respond in French. Focus on cryptography topics only…" rows={4} className="w-full bg-black/50 border border-white/[0.09] rounded-xl px-3 py-2.5 text-xs font-mono text-slate-300 input-glow resize-y" style={{ minHeight: '80px' }} />
+                </div>
+
+                {/* Info box */}
+                <div className="flex items-start gap-2.5 p-3 rounded-xl bg-aether-500/[0.07] border border-aether-500/20 text-[10px] text-slate-400">
+                  <I.Star />
+                  <div className="leading-relaxed">All settings persist via <code className="text-aether-400">localStorage</code>. Your Cloudflare Worker handles AI requests server-side — <strong className="text-white">API keys never leave the Worker</strong>.</div>
+                </div>
+              </div>
+
+              {/* Footer */}
+              <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-white/[0.07]" style={{ background: 'rgba(85,72,247,.04)' }}>
+                <button onClick={() => setSettingsOpen(false)} className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-400 hover:text-white hover:bg-white/[0.07] border border-white/[0.07] transition cursor-pointer">Cancel</button>
+                <button onClick={() => { toast('Settings saved', 'success'); setSettingsOpen(false); }} className="px-5 py-2 rounded-xl text-xs font-semibold text-white transition cursor-pointer" style={{ background: 'linear-gradient(135deg,#5548f7,#818cf8)', boxShadow: '0 4px 15px rgba(85,72,247,.3)' }}>
+                  Save Settings
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* TOAST HOST */}
+        <ToastHost />
+      </div>
+    );
+  }
+
+  ReactDOM.createRoot(document.getElementById('root')).render(
+    <React.StrictMode>
+      <App />
+    </React.StrictMode>
+  );
+  </script>
+</body>
+</html>
