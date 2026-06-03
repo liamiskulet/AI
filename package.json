@@ -1,0 +1,11 @@
+{
+  "name": "aetherchat-frontend",
+  "version": "1.0.0",
+  "description": "Standalone AI Chat Interface",
+  "main": "index.html",
+  "scripts": {
+    "start": "echo 'Open index.html directly in your browser!'"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}
